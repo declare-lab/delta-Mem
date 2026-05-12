@@ -1,0 +1,18 @@
+[
+  {
+    "messages": [
+      {"role": "user", "content": "请记住代号 A17，并只回复“已记住”。"},
+      {"role": "assistant", "content": "已记住。"},
+      {"role": "user", "content": "我刚才让你记住的代号是什么？只输出代号本身。"},
+      {"role": "assistant", "content": "A17"}
+    ]
+  },
+  {
+    "messages": [
+      {"role": "user", "content": "把“蓝桥”映射成“上海”，只回复“收到”。"},
+      {"role": "assistant", "content": "收到。"},
+      {"role": "user", "content": "蓝桥指的是哪里？只输出地名。"},
+      {"role": "assistant", "content": "上海"}
+    ]
+  }
+]

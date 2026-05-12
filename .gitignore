@@ -1,0 +1,89 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.pyre/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local Python environments and tooling state
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+.python-version
+pip-wheel-metadata/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Notebooks, editors, and OS noise
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Local logs and process leftovers
+*.log
+*.out
+*.err
+*.pid
+*.pid.lock
+*.tmp
+*.temp
+nohup.out
+
+# Experiment outputs and run directories
+/logs/
+/runs/
+/results/
+/checkpoints/
+/saves/
+/outputs/
+/tmp/
+/wandb/
+/mlruns/
+/lightning_logs/
+/tensorboard/
+
+# Hugging Face, Accelerate, DeepSpeed, and distributed runtime state
+/.cache/
+/hf_cache/
+/huggingface_cache/
+/accelerate/
+/.deepspeed_env
+zero_to_fp32.py
+global_step*/
+
+# Model weights, checkpoints, and large training shards
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+*.gguf
+*.npz
+*.npy
+*.arrow
+*.parquet
+
+# Generated local reports from ad-hoc final experiment scans
+/docs/final_exp/*_model_matrix_*.md
+/docs/final_exp/*_locomo_ablation_*.md
