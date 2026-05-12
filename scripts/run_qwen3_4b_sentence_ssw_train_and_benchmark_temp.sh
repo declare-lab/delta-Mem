@@ -2,11 +2,12 @@
 
 set -euo pipefail
 
-ROOT_DIR="/root/code/Delta-Mem"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
 RUN_NAME="qwen3_4b_instruct_delta_mem_qasper_6k_seed42_rank8_qo_SSW_sentence_write8192_consistent70_temp"
-MODEL_ROOT="/vePFS-Mindverse/share/models/leijingdi/models/${RUN_NAME}"
-PIPELINE_ROOT="/vePFS-Mindverse/share/models/leijingdi/results/${RUN_NAME}_train_and_benchmark_temp"
-SUITE_ROOT="/vePFS-Mindverse/share/models/leijingdi/results/${RUN_NAME}_benchmark_temp"
+MODEL_ROOT="/root/models/${RUN_NAME}"
+PIPELINE_ROOT="/root/outputs/${RUN_NAME}_train_and_benchmark_temp"
+SUITE_ROOT="/root/outputs/${RUN_NAME}_benchmark_temp"
 EVAL_TASKS_STRING="${EVAL_TASKS_STRING:-locomo hotpotqa gpqa_diamond ifeval memory_agent_bench}"
 
 cd "${ROOT_DIR}"

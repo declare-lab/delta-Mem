@@ -2,20 +2,21 @@
 
 set -euo pipefail
 
-ROOT_DIR="/root/code/Delta-Mem"
-PYTHON_BIN="/root/code/Delta-Mem/.venv/bin/python"
-SUITE_ROOT="/vePFS-Mindverse/share/models/leijingdi/results/qasper_multimodel_write8192_benchmark_suite_smollm3_3b_consistent70"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-${ROOT_DIR}/.venv/bin/python}"
+SUITE_ROOT="/root/outputs/qasper_multimodel_write8192_benchmark_suite_smollm3_3b_consistent70"
 LOG_ROOT="${SUITE_ROOT}/logs"
 MANIFEST_PATH="${SUITE_ROOT}/run_manifest.txt"
-HF_HOME="/vePFS-Mindverse/share/huggingface"
-HF_HUB_CACHE="/vePFS-Mindverse/share/huggingface/hub"
-HF_DATASETS_CACHE="/vePFS-Mindverse/share/datasets_cache"
-MEMORY_AGENT_BENCH_ROOT="/root/code/external/MemoryAgentBench"
-LOCOMO_DATA_FILE="/root/code/Delta-Mem/data/locomo10.json"
-BASE_MODEL_PATH="/vePFS-Mindverse/share/huggingface/models--HuggingFaceTB--SmolLM3-3B/snapshots/a07cc9a04f16550a088caea529712d1d335b0ac1"
-SSW_ADAPTER_DIR="${SSW_ADAPTER_DIR:-/vePFS-Mindverse/share/models/leijingdi/models/smollm3_3b_delta_mem_qasper_6k_seed42_rank8_qo_SSW_write8192_consistent70/trainer/checkpoint-70}"
-TSW_ADAPTER_DIR="${TSW_ADAPTER_DIR:-/vePFS-Mindverse/share/models/leijingdi/models/smollm3_3b_delta_mem_qasper_6k_seed42_rank8_qo_TSW_write8192_consistent70/trainer/checkpoint-70}"
-MSW_ADAPTER_DIR="${MSW_ADAPTER_DIR:-/vePFS-Mindverse/share/models/leijingdi/models/smollm3_3b_delta_mem_qasper_6k_seed42_MSW_write8192_consistent70/trainer/checkpoint-70}"
+HF_HOME="/root/huggingface"
+HF_HUB_CACHE="/root/huggingface/hub"
+HF_DATASETS_CACHE="/root/datasets_cache"
+MEMORY_AGENT_BENCH_ROOT="/root/external/MemoryAgentBench"
+LOCOMO_DATA_FILE="${ROOT_DIR}/data/locomo10.json"
+BASE_MODEL_PATH="/root/huggingface/models--HuggingFaceTB--SmolLM3-3B/snapshots/a07cc9a04f16550a088caea529712d1d335b0ac1"
+SSW_ADAPTER_DIR="${SSW_ADAPTER_DIR:-/root/models/smollm3_3b_delta_mem_qasper_6k_seed42_rank8_qo_SSW_write8192_consistent70/trainer/checkpoint-70}"
+TSW_ADAPTER_DIR="${TSW_ADAPTER_DIR:-/root/models/smollm3_3b_delta_mem_qasper_6k_seed42_rank8_qo_TSW_write8192_consistent70/trainer/checkpoint-70}"
+MSW_ADAPTER_DIR="${MSW_ADAPTER_DIR:-/root/models/smollm3_3b_delta_mem_qasper_6k_seed42_MSW_write8192_consistent70/trainer/checkpoint-70}"
 
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
 DEFAULT_EVAL_TASKS=(locomo hotpotqa gpqa_diamond ifeval memory_agent_bench)

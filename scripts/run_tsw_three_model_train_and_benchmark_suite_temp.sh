@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-ROOT_DIR="/root/code/Delta-Mem"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
+ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
 EVAL_TASKS_STRING="${EVAL_TASKS_STRING:-locomo hotpotqa gpqa_diamond ifeval memory_agent_bench}"
 
 cd "${ROOT_DIR}"
