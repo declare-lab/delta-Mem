@@ -49,6 +49,7 @@ Thumbs.db
 *.temp
 nohup.out
 scripts/upload_qwen3_4b_tsw_to_hf.py
+scripts/*temp*.sh
 model_cards/
 
 # Experiment outputs and run directories
