@@ -73,9 +73,24 @@ Delta-Mem/
 └── deepspeed_zero2.json
 ```
 
-## Installation
+## Environment Setup
 
-Clone the repository and create the local environment:
+### System Requirements
+
+Recommended setup:
+
+| Component | Recommendation |
+| --- | --- |
+| Python | 3.10 or newer |
+| GPU | NVIDIA GPU for training/evaluation |
+| CUDA/PyTorch | A CUDA-enabled PyTorch build matching your driver |
+| Package manager | `uv` |
+
+The training scripts are designed for bf16 GPU runs and use FlashAttention and DeepSpeed. CPU-only usage is not the target path for this release.
+
+### One-Command Setup
+
+Clone the repository and run the setup script:
 
 ```bash
 git clone https://github.com/declare-lab/delta-Mem.git
@@ -83,7 +98,83 @@ cd delta-Mem
 bash scripts/setup_uv_env.sh
 ```
 
-The setup script creates `.venv/` and installs the Python packages expected by the training and evaluation scripts. The repository currently does not ship a `pyproject.toml`; use the provided setup script for reproducibility.
+The script creates a fresh `.venv/`, installs `requirements.txt`, installs FlashAttention with `--no-build-isolation`, and prints a short import/CUDA diagnostic at the end.
+
+If `uv` is not installed:
+
+```bash
+python -m pip install uv
+```
+
+Activate the environment:
+
+```bash
+source .venv/bin/activate
+```
+
+### Setup Options
+
+Use a specific Python executable:
+
+```bash
+PYTHON_BIN=python3.11 bash scripts/setup_uv_env.sh
+```
+
+Keep an existing `.venv/` instead of recreating it:
+
+```bash
+KEEP_VENV=1 bash scripts/setup_uv_env.sh
+```
+
+Skip FlashAttention reinstall if your cluster already provides a working build:
+
+```bash
+INSTALL_FLASH_ATTN=0 bash scripts/setup_uv_env.sh
+```
+
+### Manual Setup
+
+If you prefer to manage the environment yourself:
+
+```bash
+python -m pip install uv
+uv venv --python python3.11 .venv
+source .venv/bin/activate
+uv pip install --upgrade pip setuptools wheel
+uv pip install -r requirements.txt
+uv pip install --no-build-isolation flash-attn
+```
+
+If PyTorch needs to be installed from a specific CUDA index, install it before the requirements, for example:
+
+```bash
+uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+uv pip install -r requirements.txt
+```
+
+### Verify The Environment
+
+Run:
+
+```bash
+python - <<'PY'
+import torch, transformers, datasets, accelerate, deepspeed, flash_attn, peft
+print("torch:", torch.__version__)
+print("cuda:", torch.cuda.is_available())
+print("transformers:", transformers.__version__)
+print("datasets:", datasets.__version__)
+print("deepspeed:", deepspeed.__version__)
+print("flash_attn:", flash_attn.__file__)
+print("peft:", peft.__version__)
+PY
+```
+
+Then run the local checks:
+
+```bash
+PYTHONPATH=. python -m compileall -q deltamem
+PYTHONPATH=. python -m pytest -q deltamem/tests
+```
 
 ## Path Configuration
 

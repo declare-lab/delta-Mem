@@ -1,14 +1,25 @@
 #!/bin/bash
 
-set -ex
+set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
 cd "${ROOT_DIR}"
 
 VENV_DIR="${ROOT_DIR}/.venv"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+UV_BIN="${UV_BIN:-uv}"
+KEEP_VENV="${KEEP_VENV:-0}"
+INSTALL_FLASH_ATTN="${INSTALL_FLASH_ATTN:-1}"
 
-ROOT_DIR_ENV="${ROOT_DIR}" python - <<'PY'
+if ! command -v "${UV_BIN}" >/dev/null 2>&1; then
+  echo "uv is required. Install it first:" >&2
+  echo "  python -m pip install uv" >&2
+  exit 1
+fi
+
+if [[ "${KEEP_VENV}" != "1" ]]; then
+ROOT_DIR_ENV="${ROOT_DIR}" "${PYTHON_BIN}" - <<'PY'
 import os
 from pathlib import Path
 import shutil
@@ -16,23 +27,18 @@ path = Path(os.environ["ROOT_DIR_ENV"]) / ".venv"
 if path.exists():
     shutil.rmtree(path)
 PY
+fi
 
-uv venv --system-site-packages "${VENV_DIR}"
+"${UV_BIN}" venv --python "${PYTHON_BIN}" "${VENV_DIR}"
 
-uv pip install --python "${VENV_DIR}/bin/python" \
-  hjson \
-  ninja \
-  pydantic \
-  psutil \
-  py-cpuinfo \
-  msgpack \
-  packaging \
-  tqdm \
-  numpy \
-  einops
+"${UV_BIN}" pip install --python "${VENV_DIR}/bin/python" --upgrade pip setuptools wheel
+DS_BUILD_OPS=0 "${UV_BIN}" pip install --python "${VENV_DIR}/bin/python" -r requirements.txt
 
-DS_BUILD_OPS=0 uv pip install --python "${VENV_DIR}/bin/python" --no-deps deepspeed
-uv pip install --python "${VENV_DIR}/bin/python" --no-deps peft
+if [[ "${INSTALL_FLASH_ATTN}" == "0" ]]; then
+  echo "INSTALL_FLASH_ATTN=0 was set; skipping flash-attn reinstall."
+else
+  "${UV_BIN}" pip install --python "${VENV_DIR}/bin/python" --no-build-isolation flash-attn
+fi
 
 "${VENV_DIR}/bin/python" - <<'PY'
 import torch, transformers, datasets, wandb, accelerate, deepspeed, flash_attn, peft
