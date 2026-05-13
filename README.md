@@ -236,17 +236,6 @@ MODE=base MODEL_PATH=/path/to/Qwen3-4B-Instruct-2507 \
 bash deltamem/demo/run_chat_demo.sh
 ```
 
-The Python entry point is:
-
-```bash
-PYTHONPATH=. .venv/bin/python -m deltamem.demo.chat_demo \
-  --mode delta \
-  --model-path /path/to/Qwen3-4B-Instruct-2507 \
-  --adapter-dir /path/to/delta-mem_qwen3_4b-instruct \
-  --device cuda:0 \
-  --dtype bfloat16
-```
-
 ## Training
 
 The main Qwen3-4B training script trains SSW, TSW, and MSW variants by default:
