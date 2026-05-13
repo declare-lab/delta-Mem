@@ -289,11 +289,13 @@ bash scripts/run_qasper_multimodel_write8192_benchmark_suite.sh
 If you find our work is usefule, please kindly cite:
 
 ```bibtex
-@misc{deltamem2026,
-  title        = {Delta-Mem: Online Test-Time Memory for Long-Context LLM Agents},
-  year         = {2026},
-  eprint       = {2605.12357},
-  archivePrefix = {arXiv},
-  url          = {https://arxiv.org/abs/2605.12357}
+@misc{lei2026deltamemefficientonlinememory,
+      title={$\delta$-mem: Efficient Online Memory for Large Language Models}, 
+      author={Jingdi Lei and Di Zhang and Junxian Li and Weida Wang and Kaixuan Fan and Xiang Liu and Qihan Liu and Xiaoteng Ma and Baian Chen and Soujanya Poria},
+      year={2026},
+      eprint={2605.12357},
+      archivePrefix={arXiv},
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2605.12357}, 
 }
 ```
