@@ -48,6 +48,8 @@ Thumbs.db
 *.tmp
 *.temp
 nohup.out
+scripts/upload_qwen3_4b_tsw_to_hf.py
+model_cards/
 
 # Experiment outputs and run directories
 /logs/
