@@ -286,7 +286,7 @@ bash scripts/run_qasper_multimodel_write8192_benchmark_suite.sh
 ```
 
 ## Citation
-If you find our work is usefule, please kindly cite:
+If you find our work is useful, please kindly cite:
 
 ```bibtex
 @misc{lei2026deltamemefficientonlinememory,
