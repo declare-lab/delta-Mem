@@ -3,17 +3,9 @@
 </h1>
 
 <p align="center">
-<a href="https://creativecommons.org/licenses/by/4.0/">
-    <img alt="License: CC-BY-4.0" src="https://img.shields.io/badge/License-CC_BY_4.0-brightgreen.svg">
-</a>
-    
-<a href="https://arxiv.org/abs/2605.12357">
-     <img src="https://img.shields.io/badge/arXiv-Paper-B31B1B?style=flat-square&logo=arxiv&logoColor=white">
-</a>
-
-<a href="https://huggingface.co/declare-lab/delta-mem_qwen3_4b-instruct">
-    <img alt="Huggingface" src="https://img.shields.io/badge/🤗_Huggingface-Model-ff9800.svg">
-</a>
+<a href="https://creativecommons.org/licenses/by/4.0/"><img alt="License: CC-BY-4.0" src="https://img.shields.io/badge/License-CC_BY_4.0-brightgreen.svg"></a>
+<a href="https://arxiv.org/abs/2605.12357"><img src="https://img.shields.io/badge/arXiv-Paper-B31B1B?style=flat-square&logo=arxiv&logoColor=white"></a>
+<a href="https://huggingface.co/declare-lab/delta-mem_qwen3_4b-instruct"><img alt="Huggingface" src="https://img.shields.io/badge/🤗_Huggingface-Model-ff9800.svg"></a>
 </p>
 
 δ-mem introduces a compact Online State of Associative Memory alongside a frozen full-attention backbone. When a new token or interaction segment arrives, the model projects the current information into a low-dimensional memory space and writes it into the state through delta-rule learning.
