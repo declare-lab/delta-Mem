@@ -265,6 +265,13 @@ The main benchmark suite covers:
 | GPQA Diamond | `deltamem.eval.benchmark_compare --tasks gpqa_diamond` |
 | MemoryAgentBench | `deltamem.eval.benchmark_compare --tasks memory_agent_bench` |
 
+IFEval uses utilities from EleutherAI's lm-evaluation-harness. Clone it next to this repository:
+
+```bash
+cd ..
+git clone https://github.com/EleutherAI/lm-evaluation-harness.git
+```
+
 Run the bundled Qwen3-4B benchmark suite:
 
 ```bash
