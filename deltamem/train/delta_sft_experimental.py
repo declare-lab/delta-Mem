@@ -22,9 +22,6 @@ from deltamem.core.delta import (
     HFDeltaMemConfig,
     attach_delta_mem,
     collect_delta_mem_gate_stats,
-    collect_delta_mem_latent_stats,
-    collect_delta_mem_memory_reader_outputs,
-    collect_delta_mem_memory_reader_stats,
     collect_delta_mem_partition_route_stats,
     collect_delta_mem_state_stats,
     collect_delta_mem_weight_stats,
@@ -133,6 +130,8 @@ class DeltaMemTrainer(Trainer):
         self.memory_recover_weight = memory_recover_weight
         self.memory_need_floor = memory_need_floor
         self.memory_probe_weight = memory_probe_weight
+        if self.memory_probe_weight > 0.0:
+            raise ValueError("memory_probe was removed with archived memory_reader support")
         self.memory_probe_alpha = memory_probe_alpha
         self.memory_probe_margin = memory_probe_margin
         self.memory_partition_alignment_weight = memory_partition_alignment_weight
@@ -162,15 +161,6 @@ class DeltaMemTrainer(Trainer):
         self._last_memory_probe_gap = 0.0
         self._last_memory_probe_kl_loss = 0.0
         self._last_memory_probe_ce_loss = 0.0
-        self._last_memory_reader_enabled_modules = 0.0
-        self._last_memory_reader_active_modules = 0.0
-        self._last_memory_reader_mean_norm = 0.0
-        self._last_memory_reader_max_norm = 0.0
-        self._last_latent_enabled_modules = 0.0
-        self._last_latent_active_modules = 0.0
-        self._last_latent_valid_ratio = 0.0
-        self._last_latent_mean_slot_norm = 0.0
-        self._last_latent_gate_mean = 0.0
         self._last_memory_partition_alignment_loss = 0.0
         self._last_memory_partition_entropy_loss = 0.0
         self._last_memory_partition_balance_loss = 0.0
@@ -329,57 +319,6 @@ class DeltaMemTrainer(Trainer):
         scaled_gap = (margin - gap) / max(margin, 1e-6)
         return F.softplus(scaled_gap)
 
-    def _compute_memory_probe_logits(self, model) -> torch.Tensor | None:
-        reader_outputs = collect_delta_mem_memory_reader_outputs(model)
-        if not reader_outputs:
-            return None
-        probe_hidden = torch.stack([output for _, output in reader_outputs], dim=0).mean(dim=0)
-        base_model = self._unwrap_base_model(model)
-        backbone = getattr(base_model, "model", None)
-        if backbone is None or not hasattr(base_model, "lm_head"):
-            raise AttributeError("Memory probe requires a causal LM with `.model` and `.lm_head`.")
-        norm = getattr(backbone, "norm", None)
-        if norm is not None:
-            probe_hidden = norm(probe_hidden)
-        return base_model.lm_head(probe_hidden)
-
-    def _masked_probe_distill_loss(
-        self,
-        probe_logits: torch.Tensor | None,
-        teacher_logits: torch.Tensor,
-        labels: torch.Tensor,
-        token_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, dict[str, float]]:
-        if probe_logits is None:
-            zero = teacher_logits.new_zeros(())
-            return zero, {"loss": 0.0, "kl": 0.0, "ce": 0.0}
-
-        shift_mask = token_mask[:, 1:]
-        if not shift_mask.any():
-            zero = probe_logits.new_zeros(())
-            return zero, {"loss": 0.0, "kl": 0.0, "ce": 0.0}
-
-        shift_probe_logits = probe_logits[:, :-1, :].float()
-        shift_teacher_logits = teacher_logits[:, :-1, :].float()
-        shift_labels = labels[:, 1:]
-        probe_log_probs = F.log_softmax(shift_probe_logits, dim=-1)
-        teacher_probs = F.softmax(shift_teacher_logits, dim=-1)
-        kl = F.kl_div(probe_log_probs, teacher_probs, reduction="none").sum(dim=-1)
-        ce = F.cross_entropy(
-            shift_probe_logits.reshape(-1, shift_probe_logits.size(-1)),
-            shift_labels.reshape(-1),
-            reduction="none",
-            ignore_index=-100,
-        ).view_as(shift_labels)
-        masked_kl = kl.masked_select(shift_mask).mean()
-        masked_ce = ce.masked_select(shift_mask).mean()
-        mixed = self.memory_probe_alpha * masked_kl + (1.0 - self.memory_probe_alpha) * masked_ce
-        return mixed, {
-            "loss": float(mixed.detach().float().item()),
-            "kl": float(masked_kl.detach().float().item()),
-            "ce": float(masked_ce.detach().float().item()),
-        }
-
     def _masked_lm_loss(
         self,
         logits: torch.Tensor,
@@ -488,12 +427,6 @@ class DeltaMemTrainer(Trainer):
         corrupt_loss = keep_loss.new_zeros(())
         if corrupt_logits is not None:
             corrupt_loss = self._masked_lm_loss(corrupt_logits, model_inputs["labels"], token_mask)
-
-        probe_logits = self._compute_memory_probe_logits(model)
-        split_probe_logits = self._split_stacked_tensor(probe_logits, batch_size, num_variants)
-        keep_probe_logits = split_probe_logits[0]
-        reset_probe_logits = split_probe_logits[1]
-        keep_reader_stats = collect_delta_mem_memory_reader_stats(model)
 
         keep_outputs = {
             "loss": keep_loss,
@@ -625,43 +558,7 @@ class DeltaMemTrainer(Trainer):
             "probe_gap": 0.0,
             "probe_kl": 0.0,
             "probe_ce": 0.0,
-            "reader_enabled_modules": float(keep_reader_stats["enabled_modules"]),
-            "reader_active_modules": float(keep_reader_stats["active_modules"]),
-            "reader_mean_norm": keep_reader_stats["mean_output_norm"],
-            "reader_max_norm": keep_reader_stats["max_output_norm"],
         }
-        if self.memory_probe_weight > 0.0:
-            if teacher_read_logits is None:
-                raise ValueError("memory_probe requires a teacher-aligned memory loss mode")
-            keep_probe_loss, keep_probe_parts = self._masked_probe_distill_loss(
-                keep_probe_logits,
-                teacher_read_logits,
-                model_inputs["labels"],
-                token_mask,
-            )
-            reset_probe_loss, _ = self._masked_probe_distill_loss(
-                reset_probe_logits,
-                teacher_read_logits,
-                model_inputs["labels"],
-                token_mask,
-            )
-            probe_gap = reset_probe_loss - keep_probe_loss
-            scaled_probe_gap = (self.memory_probe_margin - probe_gap) / max(
-                self.memory_probe_margin,
-                1e-6,
-            )
-            probe_margin_loss = F.softplus(scaled_probe_gap)
-            weighted = weighted + self.memory_probe_weight * (
-                keep_probe_loss + probe_margin_loss
-            )
-            probe_stats = {
-                "probe_keep_loss": float(keep_probe_loss.detach().float().item()),
-                "probe_reset_loss": float(reset_probe_loss.detach().float().item()),
-                "probe_margin_loss": float(probe_margin_loss.detach().float().item()),
-                "probe_gap": float(probe_gap.detach().float().item()),
-                "probe_kl": keep_probe_parts["kl"],
-                "probe_ce": keep_probe_parts["ce"],
-            }
 
         memory_loss = weighted
         total_loss = keep_loss + memory_loss
@@ -685,10 +582,6 @@ class DeltaMemTrainer(Trainer):
             "margin_gap": float(margin_gap.detach().float().item()),
             "wmem": float(wmem.detach().float().item()),
             **probe_stats,
-            "reader_enabled_modules": float(keep_reader_stats["enabled_modules"]),
-            "reader_active_modules": float(keep_reader_stats["active_modules"]),
-            "reader_mean_norm": keep_reader_stats["mean_output_norm"],
-            "reader_max_norm": keep_reader_stats["max_output_norm"],
         }
 
     def _build_full_sequence_inputs(
@@ -837,10 +730,6 @@ class DeltaMemTrainer(Trainer):
             "probe_gap": 0.0,
             "probe_kl": 0.0,
             "probe_ce": 0.0,
-            "reader_enabled_modules": 0.0,
-            "reader_active_modules": 0.0,
-            "reader_mean_norm": 0.0,
-            "reader_max_norm": 0.0,
         }
 
     def _compute_context_ablation_ce(
@@ -955,10 +844,6 @@ class DeltaMemTrainer(Trainer):
             "probe_gap": 0.0,
             "probe_kl": 0.0,
             "probe_ce": 0.0,
-            "reader_enabled_modules": 0.0,
-            "reader_active_modules": 0.0,
-            "reader_mean_norm": 0.0,
-            "reader_max_norm": 0.0,
         }
 
     def _compute_memory_objective(
@@ -999,10 +884,6 @@ class DeltaMemTrainer(Trainer):
                 "probe_gap": 0.0,
                 "probe_kl": 0.0,
                 "probe_ce": 0.0,
-                "reader_enabled_modules": 0.0,
-                "reader_active_modules": 0.0,
-                "reader_mean_norm": 0.0,
-                "reader_max_norm": 0.0,
             }
         if self.memory_loss_mode not in {
             "state_margin_kl",
@@ -1021,8 +902,6 @@ class DeltaMemTrainer(Trainer):
 
         token_mask = model_inputs["labels"].ne(-100) & model_inputs["attention_mask"].ne(0)
         read_context_mask = self._build_read_context_mask(model_inputs)
-        keep_probe_logits = self._compute_memory_probe_logits(model)
-        keep_reader_stats = collect_delta_mem_memory_reader_stats(model)
         self._reset_online_state(model)
         set_delta_mem_read_context_mask(model, read_context_mask)
         set_delta_mem_write_enabled(model, False)
@@ -1032,8 +911,6 @@ class DeltaMemTrainer(Trainer):
         )
         if reset_loss.ndim > 0:
             reset_loss = reset_loss.mean()
-        reset_probe_logits = self._compute_memory_probe_logits(model)
-
         corrupt_loss = keep_loss.new_zeros(())
         if self.memory_loss_mode in {"state_causal_anchor"}:
             self._reset_online_state(model)
@@ -1234,43 +1111,7 @@ class DeltaMemTrainer(Trainer):
             "probe_gap": 0.0,
             "probe_kl": 0.0,
             "probe_ce": 0.0,
-            "reader_enabled_modules": float(keep_reader_stats["enabled_modules"]),
-            "reader_active_modules": float(keep_reader_stats["active_modules"]),
-            "reader_mean_norm": keep_reader_stats["mean_output_norm"],
-            "reader_max_norm": keep_reader_stats["max_output_norm"],
         }
-        if self.memory_probe_weight > 0.0:
-            if teacher_read_logits is None:
-                raise ValueError("memory_probe requires a teacher-aligned memory loss mode")
-            keep_probe_loss, keep_probe_parts = self._masked_probe_distill_loss(
-                keep_probe_logits,
-                teacher_read_logits,
-                model_inputs["labels"],
-                token_mask,
-            )
-            reset_probe_loss, _ = self._masked_probe_distill_loss(
-                reset_probe_logits,
-                teacher_read_logits,
-                model_inputs["labels"],
-                token_mask,
-            )
-            probe_gap = reset_probe_loss - keep_probe_loss
-            scaled_probe_gap = (self.memory_probe_margin - probe_gap) / max(
-                self.memory_probe_margin,
-                1e-6,
-            )
-            probe_margin_loss = F.softplus(scaled_probe_gap)
-            weighted = weighted + self.memory_probe_weight * (
-                keep_probe_loss + probe_margin_loss
-            )
-            probe_stats = {
-                "probe_keep_loss": float(keep_probe_loss.detach().float().item()),
-                "probe_reset_loss": float(reset_probe_loss.detach().float().item()),
-                "probe_margin_loss": float(probe_margin_loss.detach().float().item()),
-                "probe_gap": float(probe_gap.detach().float().item()),
-                "probe_kl": keep_probe_parts["kl"],
-                "probe_ce": keep_probe_parts["ce"],
-            }
         return weighted, {
             "keep_loss": float(keep_loss.detach().float().item()),
             "reset_loss": float(reset_loss.detach().float().item()),
@@ -1285,10 +1126,6 @@ class DeltaMemTrainer(Trainer):
             "margin_gap": float(margin_gap.detach().float().item()),
             "wmem": float(wmem.detach().float().item()),
             **probe_stats,
-            "reader_enabled_modules": float(keep_reader_stats["enabled_modules"]),
-            "reader_active_modules": float(keep_reader_stats["active_modules"]),
-            "reader_mean_norm": keep_reader_stats["mean_output_norm"],
-            "reader_max_norm": keep_reader_stats["max_output_norm"],
         }
 
     def compute_loss(
@@ -1349,10 +1186,6 @@ class DeltaMemTrainer(Trainer):
             "probe_gap": 0.0,
             "probe_kl": 0.0,
             "probe_ce": 0.0,
-            "reader_enabled_modules": 0.0,
-            "reader_active_modules": 0.0,
-            "reader_mean_norm": 0.0,
-            "reader_max_norm": 0.0,
         }
         if self.memory_loss_mode == "context_dropout_ce" and has_episode_memory_inputs:
             loss, outputs, memory_stats = self._compute_context_dropout_ce(
@@ -1467,12 +1300,6 @@ class DeltaMemTrainer(Trainer):
             self._last_memory_partition_alignment_loss = 0.0
             self._last_memory_partition_entropy_loss = 0.0
             self._last_memory_partition_balance_loss = 0.0
-        latent_stats = collect_delta_mem_latent_stats(model)
-        self._last_latent_enabled_modules = latent_stats["enabled_modules"]
-        self._last_latent_active_modules = latent_stats["active_modules"]
-        self._last_latent_valid_ratio = latent_stats["valid_ratio"]
-        self._last_latent_mean_slot_norm = latent_stats["mean_slot_norm"]
-        self._last_latent_gate_mean = latent_stats["gate_mean"]
         partition_route_stats = collect_delta_mem_partition_route_stats(model)
         self._last_partition_enabled_modules = partition_route_stats["enabled_modules"]
         self._last_partition_tied_read_write_modules = partition_route_stats["tied_read_write_modules"]
@@ -1503,10 +1330,6 @@ class DeltaMemTrainer(Trainer):
         self._last_memory_probe_gap = memory_stats["probe_gap"]
         self._last_memory_probe_kl_loss = memory_stats["probe_kl"]
         self._last_memory_probe_ce_loss = memory_stats["probe_ce"]
-        self._last_memory_reader_enabled_modules = memory_stats["reader_enabled_modules"]
-        self._last_memory_reader_active_modules = memory_stats["reader_active_modules"]
-        self._last_memory_reader_mean_norm = memory_stats["reader_mean_norm"]
-        self._last_memory_reader_max_norm = memory_stats["reader_max_norm"]
         set_delta_mem_read_context_mask(model, None)
         set_delta_mem_write_enabled(model, True)
         if partition_regularization is not None:
@@ -1551,15 +1374,6 @@ class DeltaMemTrainer(Trainer):
                     "delta/beta_mean": gate_stats["beta_mean"],
                     "delta/lambda_mean": gate_stats["lambda_mean"],
                     "delta/rankwise_gate_modules": gate_stats["rankwise_gate_modules"],
-                    "delta/memory_reader_modules": self._last_memory_reader_enabled_modules,
-                    "delta/memory_reader_active_modules": self._last_memory_reader_active_modules,
-                    "delta/memory_reader_mean_norm": self._last_memory_reader_mean_norm,
-                    "delta/memory_reader_max_norm": self._last_memory_reader_max_norm,
-                    "delta/latent_enabled_modules": self._last_latent_enabled_modules,
-                    "delta/latent_active_modules": self._last_latent_active_modules,
-                    "delta/latent_valid_ratio": self._last_latent_valid_ratio,
-                    "delta/latent_mean_slot_norm": self._last_latent_mean_slot_norm,
-                    "delta/latent_gate_mean": self._last_latent_gate_mean,
                     "delta/partition_enabled_modules": self._last_partition_enabled_modules,
                     "delta/partition_tied_read_write_modules": self._last_partition_tied_read_write_modules,
                     "delta/partition_active_modules": self._last_partition_active_modules,
@@ -1580,8 +1394,6 @@ class DeltaMemTrainer(Trainer):
                         weight_stats["delta_scale_mean_sum"]
                         / max(weight_stats["trainable_delta_scale_modules"], 1)
                     ),
-                    "delta/memory_reader_up_norm_sum": weight_stats["memory_reader_up_norm_sum"],
-                    "delta/memory_reader_down_norm_sum": weight_stats["memory_reader_down_norm_sum"],
                     "delta/write_sparsity_loss": self._last_write_sparsity_loss,
                     "delta/memory_keep_loss": self._last_memory_keep_loss,
                     "delta/memory_reset_loss": self._last_memory_reset_loss,

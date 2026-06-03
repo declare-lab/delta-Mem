@@ -14,6 +14,8 @@ htmlcov/
 
 # Local Python environments and tooling state
 .venv/
+.uv-bootstrap/
+.uv-cache/
 venv/
 env/
 .env

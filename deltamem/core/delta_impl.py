@@ -551,17 +551,6 @@ class DeltaMemAttention(nn.Module):
         self.global_memory_merge_mode = config.global_memory_merge_mode
         self.global_memory_gate_bias_init = config.global_memory_gate_bias_init
         self.global_memory_read_logit_bias = config.global_memory_read_logit_bias
-        self.memory_readout_mode = config.memory_readout_mode
-        self.synthetic_memory_slots = config.synthetic_memory_slots
-        self.latent_memory_hidden_size = config.latent_memory_hidden_size
-        self.latent_memory_residual_scale = config.latent_memory_residual_scale
-        self.latent_memory_slots = config.latent_memory_slots
-        self.latent_memory_init_std = config.latent_memory_init_std
-        self.latent_gate_init = config.latent_gate_init
-        self.latent_memory_enabled = (
-            self.memory_readout_mode in {"latent_context", "memory_branch"}
-            and self.layer_idx in config.latent_memory_layers
-        )
         self.gate_dim_per_head = config.rank if config.rankwise_gates else 1
         self.gate_dim = self.gate_dim_per_head * self.num_state_heads
         self.active_delta_heads = frozenset(config.delta_heads)
@@ -580,13 +569,10 @@ class DeltaMemAttention(nn.Module):
             base.v_proj.out_features if base.v_proj is not None else base.k_proj.out_features
         )
         self.num_key_value_heads = base.k_proj.out_features // self.head_dim
-        self.synthetic_state_dim = config.rank * config.rank * config.num_state_heads
         self.partition_state_dim = config.rank * config.rank
         self.memory_write_source = config.memory_write_source
         self.memory_write_granularity = config.memory_write_granularity
         self.memory_write_proposals_per_message = config.memory_write_proposals_per_message
-        self.split_global_memory_enabled = False
-
         self.memory_q_proj = nn.Parameter(torch.empty(self.state_read_dim, hidden_size))
         self.memory_k_proj = nn.Parameter(torch.empty(self.state_read_dim, hidden_size))
         self.memory_v_proj = nn.Parameter(torch.empty(self.state_read_dim, hidden_size))
@@ -606,23 +592,12 @@ class DeltaMemAttention(nn.Module):
                 torch.full((self.gate_dim,), -config.beta_bias_init)
             )
 
-        self.memory_reader_enabled = False
-        self.memory_reader_hidden_size = config.memory_reader_hidden_size
-        self.memory_reader_residual_scale = config.memory_reader_residual_scale
-        self.memory_reader_read_only = config.memory_reader_read_only
         self.reset_parameters()
         self.delta_state: torch.Tensor | None = None
-        self.cached_latent_slots: torch.Tensor | None = None
-        self.cached_latent_slot_valid: torch.Tensor | None = None
         self.read_context_mask: torch.Tensor | None = None
         self.last_beta_mean: torch.Tensor | None = None
         self.last_lambda_mean: torch.Tensor | None = None
         self.write_enabled = True
-        self.last_memory_reader_output: torch.Tensor | None = None
-        self.last_memory_reader_norm: torch.Tensor | None = None
-        self.last_latent_slot_valid_ratio: torch.Tensor | None = None
-        self.last_latent_slot_norm: torch.Tensor | None = None
-        self.last_latent_gate_value: torch.Tensor | None = None
         self.last_write_routes: torch.Tensor | None = None
         self.last_read_routes: torch.Tensor | None = None
         self.last_base_o_norm: torch.Tensor | None = None
@@ -716,17 +691,11 @@ class DeltaMemAttention(nn.Module):
         self.read_context_mask = None
         self.last_beta_mean = None
         self.last_lambda_mean = None
-        self.last_memory_reader_output = None
-        self.last_memory_reader_norm = None
-        self.last_latent_slot_valid_ratio = None
-        self.last_latent_slot_norm = None
-        self.last_latent_gate_value = None
         self.last_write_routes = None
         self.last_read_routes = None
         self.last_base_o_norm = None
         self.last_delta_o_norm = None
         self.last_delta_o_ratio = None
-        self.last_global_merge_gate = None
         self.write_message_ids = None
         self.write_sentence_ids = None
 
@@ -1217,40 +1186,6 @@ class DeltaMemAttention(nn.Module):
             weights = weights * token_mask.unsqueeze(-1).to(dtype=weights.dtype)
         return weights
 
-    def _partition_cross_attention_reads(
-        self,
-        partition_reads: torch.Tensor,
-        memory_q_seq: torch.Tensor,
-        token_mask: Optional[torch.Tensor],
-        *,
-        top_k: int,
-        use_sigmoid_gates: bool,
-    ) -> torch.Tensor:
-        if memory_q_seq.ndim == 4:
-            query = memory_q_seq.permute(0, 2, 1, 3)
-        else:
-            query = memory_q_seq.unsqueeze(2).expand(
-                -1,
-                -1,
-                partition_reads.size(2),
-                -1,
-            )
-        key_states = F.linear(partition_reads, self.partition_cross_attn_key_proj)
-        value_states = F.linear(partition_reads, self.partition_cross_attn_value_proj)
-        scores = (query * key_states).sum(dim=-1) / math.sqrt(float(self.rank))
-        scores = self._mask_partition_top_k(scores, top_k=top_k)
-        attn = F.softmax(scores, dim=-1)
-        effective_weights = attn
-        if use_sigmoid_gates:
-            gate_scores = scores
-            if hasattr(self, "partition_sigmoid_gate_bias"):
-                gate_scores = gate_scores + self.partition_sigmoid_gate_bias.view(1, 1, -1)
-            effective_weights = attn * torch.sigmoid(gate_scores)
-        if token_mask is not None:
-            effective_weights = effective_weights * token_mask.unsqueeze(-1).to(dtype=effective_weights.dtype)
-        self.last_read_routes = effective_weights
-        return torch.einsum("btp,btpi->bti", effective_weights, value_states)
-
     def _slot_query_softmax_weights(
         self,
         partition_reads: torch.Tensor,
@@ -1300,7 +1235,6 @@ class DeltaMemAttention(nn.Module):
         effective_routes = torch.cat([global_routes * gate, local_routes], dim=-1)
         denom = effective_routes.sum(dim=-1, keepdim=True).clamp_min(1e-6)
         effective_routes = effective_routes / denom
-        self.last_global_merge_gate = gate.squeeze(-1).detach().float()
         return reads, effective_routes
 
     def _aggregate_split_partition_reads(
@@ -1322,7 +1256,6 @@ class DeltaMemAttention(nn.Module):
                 ),
             )
             self.last_read_routes = read_routes
-            self.last_global_merge_gate = None
             return torch.einsum("btp,btpi->bti", read_routes, partition_reads)
 
         global_partition_reads = partition_reads[:, :, : self.num_global_memory_partitions, :]
@@ -1606,291 +1539,6 @@ class DeltaMemAttention(nn.Module):
                     coverage = coverage + attention
                     proposal_index += 1
         return proposal_hidden, proposal_mask, proposal_message_ids
-
-    def _latent_memory_active(self) -> bool:
-        return self.latent_memory_enabled and not self.write_enabled
-
-    def _compute_latent_memory_slots(
-        self,
-        hidden_states: torch.Tensor,
-        state: torch.Tensor,
-        token_mask: Optional[torch.Tensor],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        context_mask = self._resolve_read_context_mask(
-            token_mask,
-            batch_size=hidden_states.size(0),
-            seq_len=hidden_states.size(1),
-            device=hidden_states.device,
-        )
-        question_summary = self._masked_hidden_mean(hidden_states, context_mask)
-        latent_query = self._normalize_memory_projection(
-            F.linear(question_summary, self.latent_query_proj)
-        )
-        if self.num_memory_partitions > 1:
-            if self.tie_memory_partition_read_write:
-                route_logits = F.linear(question_summary, self.write_router_proj, self.write_router_bias)
-            else:
-                route_logits = F.linear(question_summary, self.read_router_proj, self.read_router_bias)
-            read_route = self._routing_distribution(route_logits)
-            partition_reads = torch.einsum("bpij,bj->bpi", state, latent_query)
-            retrieved = torch.einsum("bp,bpr->br", read_route, partition_reads)
-        else:
-            retrieved = torch.einsum("bij,bj->bi", state, latent_query)
-        # For latent-context readout, the prefix content should come from state retrieval
-        # rather than directly rewriting the current read chunk into synthetic KV.
-        if self.memory_readout_mode == "latent_context":
-            slot_source = torch.zeros_like(question_summary)
-        else:
-            slot_source = question_summary
-        weaver_input = torch.cat([slot_source, retrieved.to(dtype=question_summary.dtype)], dim=-1)
-        latent_hidden = F.silu(self.latent_weaver_up(weaver_input))
-        latent_slots = self.latent_weaver_down(latent_hidden).view(
-            hidden_states.size(0),
-            self.latent_memory_slots,
-            self.hidden_size,
-        )
-        has_state = state.float().flatten(1).pow(2).mean(dim=-1) > 1e-12
-        slot_valid = has_state.unsqueeze(-1).expand(-1, self.latent_memory_slots)
-        latent_slots = latent_slots * slot_valid.unsqueeze(-1).to(dtype=latent_slots.dtype)
-        return latent_slots, slot_valid
-
-    def _get_or_build_latent_memory_slots(
-        self,
-        hidden_states: torch.Tensor,
-        state: torch.Tensor,
-        token_mask: Optional[torch.Tensor],
-        past_key_values,
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
-        if not self._latent_memory_active():
-            return None, None
-        if (
-            past_key_values is not None
-            and self.cached_latent_slots is not None
-            and self.cached_latent_slot_valid is not None
-            and self.cached_latent_slots.size(0) == hidden_states.size(0)
-        ):
-            cached_slots = self.cached_latent_slots.to(
-                device=hidden_states.device,
-                dtype=hidden_states.dtype,
-            )
-            cached_valid = self.cached_latent_slot_valid.to(device=hidden_states.device)
-            return cached_slots, cached_valid
-        latent_slots, slot_valid = self._compute_latent_memory_slots(hidden_states, state, token_mask)
-        self.cached_latent_slots = latent_slots.detach()
-        self.cached_latent_slot_valid = slot_valid.detach()
-        return latent_slots, slot_valid
-
-    def _latent_gate_value(
-        self,
-        *,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        if not self.latent_memory_enabled:
-            return torch.tensor(1.0, device=device, dtype=dtype)
-        return self.latent_gate.to(device=device, dtype=dtype).clamp(0.0, 1.0)
-
-    def _latent_slots_to_kv(
-        self,
-        latent_slots: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size = latent_slots.size(0)
-        latent_k = F.linear(latent_slots, self.latent_k_proj)
-        latent_v = F.linear(latent_slots, self.latent_v_proj)
-        latent_k = self._normalize_key_states(
-            latent_k.view(
-                batch_size,
-                self.latent_memory_slots,
-                self.num_key_value_heads,
-                self.head_dim,
-            )
-        ).transpose(1, 2)
-        latent_v = latent_v.view(
-            batch_size,
-            self.latent_memory_slots,
-            self.num_key_value_heads,
-            self.head_dim,
-        ).transpose(1, 2)
-        return latent_k, latent_v
-
-    def _prepend_latent_context(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor],
-        *,
-        latent_slots: torch.Tensor,
-        slot_valid: torch.Tensor,
-        query_len: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        latent_k, latent_v = self._latent_slots_to_kv(latent_slots)
-        latent_gate = self._latent_gate_value(device=key_states.device, dtype=key_states.dtype)
-        latent_k = latent_k.to(dtype=key_states.dtype) * latent_gate
-        latent_v = latent_v.to(dtype=value_states.dtype) * latent_gate.to(dtype=value_states.dtype)
-        key_states = torch.cat([latent_k, key_states], dim=-2)
-        value_states = torch.cat([latent_v, value_states], dim=-2)
-        if attention_mask is None:
-            if bool(slot_valid.all()):
-                return key_states, value_states, None
-            full_mask = key_states.new_zeros(
-                (key_states.size(0), 1, query_len, key_states.size(-2)),
-                dtype=torch.float32,
-            )
-            full_mask[:, :, :, : self.latent_memory_slots] = full_mask[:, :, :, : self.latent_memory_slots].masked_fill(
-                (~slot_valid).view(key_states.size(0), 1, 1, self.latent_memory_slots),
-                torch.finfo(full_mask.dtype).min,
-            )
-            return key_states, value_states, full_mask.to(dtype=key_states.dtype)
-        if attention_mask.dim() == 2:
-            memory_mask = slot_valid.to(device=attention_mask.device, dtype=attention_mask.dtype)
-            return (
-                key_states,
-                value_states,
-                torch.cat([memory_mask, attention_mask], dim=-1),
-            )
-        if attention_mask.dim() == 4:
-            memory_bias = attention_mask.new_zeros(
-                attention_mask.size(0),
-                attention_mask.size(1),
-                attention_mask.size(2),
-                self.latent_memory_slots,
-            )
-            min_value = torch.finfo(memory_bias.dtype).min
-            memory_bias = memory_bias.masked_fill(
-                (~slot_valid).view(attention_mask.size(0), 1, 1, self.latent_memory_slots),
-                min_value,
-            )
-            return (
-                key_states,
-                value_states,
-                torch.cat([memory_bias, attention_mask], dim=-1),
-            )
-        raise ValueError(
-            f"Unsupported attention_mask shape for latent context readout: {tuple(attention_mask.shape)}"
-        )
-
-    def _memory_branch_attention(
-        self,
-        hidden_states: torch.Tensor,
-        latent_slots: torch.Tensor,
-        slot_valid: torch.Tensor,
-    ) -> torch.Tensor:
-        if not bool(slot_valid.any()):
-            return hidden_states.new_zeros(hidden_states.shape)
-        batch_size, seq_len, _ = hidden_states.shape
-        query_states = self._normalize_query_states(
-            self._base_query_projection(hidden_states).view(batch_size, seq_len, -1, self.head_dim)
-        ).transpose(1, 2)
-        key_states, value_states = self._latent_slots_to_kv(latent_slots)
-        if key_states.size(1) != query_states.size(1):
-            key_states = key_states.repeat_interleave(self.num_key_value_groups, dim=1)
-            value_states = value_states.repeat_interleave(self.num_key_value_groups, dim=1)
-        attn_scores = torch.matmul(
-            query_states.float(),
-            key_states.float().transpose(-2, -1),
-        ) * self.scaling
-        attn_scores = attn_scores.masked_fill(
-            (~slot_valid).view(batch_size, 1, 1, self.latent_memory_slots),
-            torch.finfo(attn_scores.dtype).min,
-        )
-        attn_probs = torch.softmax(attn_scores, dim=-1).to(dtype=value_states.dtype)
-        branch_output = torch.matmul(attn_probs, value_states)
-        return branch_output.transpose(1, 2).reshape(batch_size, seq_len, -1).contiguous()
-
-    def _synthetic_kv_active(self) -> bool:
-        return self.memory_readout_mode == "synthetic_kv" and not self.write_enabled
-
-    def _project_state_to_synthetic_kv(
-        self,
-        state: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        batch_size = state.size(0)
-        state_flat = state.reshape(batch_size, -1)
-        synthetic_k = F.linear(state_flat, self.synthetic_k_proj)
-        synthetic_v = F.linear(state_flat, self.synthetic_v_proj)
-        synthetic_k = synthetic_k.view(
-            batch_size,
-            self.synthetic_memory_slots,
-            self.base.k_proj.out_features,
-        )
-        synthetic_v = synthetic_v.view(
-            batch_size,
-            self.synthetic_memory_slots,
-            self.base_v_out_features,
-        )
-        slot_valid = (
-            synthetic_k.float().pow(2).mean(dim=-1)
-            + synthetic_v.float().pow(2).mean(dim=-1)
-        ) > 1e-12
-        synthetic_k = self._normalize_key_states(
-            synthetic_k.view(
-                batch_size,
-                self.synthetic_memory_slots,
-                self.num_key_value_heads,
-                self.head_dim,
-            )
-        ).transpose(1, 2)
-        synthetic_v = synthetic_v.view(
-            batch_size,
-            self.synthetic_memory_slots,
-            self.num_key_value_heads,
-            self.head_dim,
-        ).transpose(1, 2)
-        return synthetic_k, synthetic_v, slot_valid
-
-    def _prepend_synthetic_kv(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor],
-        *,
-        state: torch.Tensor,
-        query_len: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
-        synthetic_k, synthetic_v, slot_valid = self._project_state_to_synthetic_kv(state)
-        key_states = torch.cat([synthetic_k.to(dtype=key_states.dtype), key_states], dim=-2)
-        value_states = torch.cat([synthetic_v.to(dtype=value_states.dtype), value_states], dim=-2)
-
-        if attention_mask is None:
-            if bool(slot_valid.all()):
-                return key_states, value_states, None
-            full_mask = key_states.new_zeros(
-                (key_states.size(0), 1, query_len, key_states.size(-2)),
-                dtype=torch.float32,
-            )
-            full_mask[:, :, :, : self.synthetic_memory_slots] = full_mask[:, :, :, : self.synthetic_memory_slots].masked_fill(
-                (~slot_valid).view(key_states.size(0), 1, 1, self.synthetic_memory_slots),
-                torch.finfo(full_mask.dtype).min,
-            )
-            return key_states, value_states, full_mask.to(dtype=key_states.dtype)
-
-        if attention_mask.dim() == 2:
-            memory_mask = slot_valid.to(device=attention_mask.device, dtype=attention_mask.dtype)
-            return (
-                key_states,
-                value_states,
-                torch.cat([memory_mask, attention_mask], dim=-1),
-            )
-        if attention_mask.dim() == 4:
-            memory_bias = attention_mask.new_zeros(
-                attention_mask.size(0),
-                attention_mask.size(1),
-                attention_mask.size(2),
-                self.synthetic_memory_slots,
-            )
-            min_value = torch.finfo(memory_bias.dtype).min
-            memory_bias = memory_bias.masked_fill(
-                (~slot_valid).view(attention_mask.size(0), 1, 1, self.synthetic_memory_slots),
-                min_value,
-            )
-            return (
-                key_states,
-                value_states,
-                torch.cat([memory_bias, attention_mask], dim=-1),
-            )
-        raise ValueError(
-            f"Unsupported attention_mask shape for synthetic KV readout: {tuple(attention_mask.shape)}"
-        )
 
     def _memory_affine_scan_torch(
         self,
@@ -2192,10 +1840,6 @@ class DeltaMemAttention(nn.Module):
         self.delta_state = state
         self.last_beta_mean = self._masked_gate_mean(stats_beta, stats_mask)
         self.last_lambda_mean = self._masked_gate_mean(stats_lambda, stats_mask)
-        latent_slots, latent_slot_valid = None, None
-        self.last_latent_slot_valid_ratio = hidden_states.new_zeros(())
-        self.last_latent_slot_norm = hidden_states.new_zeros(())
-
         delta_q, delta_k, delta_v = self._compute_delta_qkv_from_reads(reads)
         delta_o = self._project_delta_head(reads, self.delta_o_proj, "o")
 
@@ -2233,32 +1877,8 @@ class DeltaMemAttention(nn.Module):
                 cache_kwargs,
             )
 
-        attention_mask_for_attn = attention_mask
-        if self._synthetic_kv_active():
-            key_states, value_states, attention_mask_for_attn = self._prepend_synthetic_kv(
-                key_states,
-                value_states,
-                attention_mask,
-                state=state,
-                query_len=query_states.size(-2),
-            )
-        elif self.memory_readout_mode == "latent_context" and latent_slots is not None and latent_slot_valid is not None:
-            key_states, value_states, attention_mask_for_attn = self._prepend_latent_context(
-                key_states,
-                value_states,
-                attention_mask,
-                latent_slots=latent_slots,
-                slot_valid=latent_slot_valid,
-                query_len=query_states.size(-2),
-            )
-
         attention_interface = self.eager_attention_forward
-        use_prefixed_memory = self._synthetic_kv_active() or (
-            self.memory_readout_mode == "latent_context"
-            and latent_slots is not None
-            and latent_slot_valid is not None
-        )
-        if not use_prefixed_memory and self.base.config._attn_implementation != "eager":
+        if self.base.config._attn_implementation != "eager":
             attention_interface = ALL_ATTENTION_FUNCTIONS[
                 self.base.config._attn_implementation
             ]
@@ -2271,7 +1891,7 @@ class DeltaMemAttention(nn.Module):
             query_states,
             key_states,
             value_states,
-            attention_mask_for_attn,
+            attention_mask,
             dropout=0.0 if not self.training else self.base.attention_dropout,
             scaling=self.base.scaling,
             **attn_kwargs,
@@ -2292,10 +1912,6 @@ class DeltaMemAttention(nn.Module):
                 token_mask,
             )
             attn_output = attn_output + delta_o_typed
-        if self.last_latent_gate_value is None:
-            self.last_latent_gate_value = attn_output.new_zeros(()).detach().float()
-        self.last_memory_reader_output = None
-        self.last_memory_reader_norm = None
         return attn_output, attn_weights
 
 
@@ -2413,7 +2029,6 @@ def collect_delta_mem_gate_stats(model: nn.Module) -> dict[str, float]:
 def collect_delta_mem_weight_stats(model: nn.Module) -> dict[str, float]:
     stats: dict[str, float] = {
         "num_modules": 0,
-        "memory_reader_modules": 0,
         "memory_q_proj_norm_sum": 0.0,
         "memory_k_proj_norm_sum": 0.0,
         "memory_v_proj_norm_sum": 0.0,
@@ -2425,8 +2040,6 @@ def collect_delta_mem_weight_stats(model: nn.Module) -> dict[str, float]:
         "trainable_delta_scale_modules": 0,
         "beta_proj_norm_sum": 0.0,
         "beta_bias_mean_sum": 0.0,
-        "memory_reader_up_norm_sum": 0.0,
-        "memory_reader_down_norm_sum": 0.0,
     }
     for _, module in iter_delta_mem_modules(model):
         stats["num_modules"] += 1
@@ -2444,14 +2057,6 @@ def collect_delta_mem_weight_stats(model: nn.Module) -> dict[str, float]:
             )
         stats["beta_proj_norm_sum"] += module.beta_proj.float().norm().item()
         stats["beta_bias_mean_sum"] += module.beta_bias.float().mean().item()
-        if module.memory_reader_enabled:
-            stats["memory_reader_modules"] += 1
-            stats["memory_reader_up_norm_sum"] += (
-                module.memory_reader_up.weight.float().norm().item()
-            )
-            stats["memory_reader_down_norm_sum"] += (
-                module.memory_reader_down.weight.float().norm().item()
-            )
     return stats
 
 
@@ -2470,19 +2075,6 @@ def snapshot_delta_mem_weights(model: nn.Module) -> dict[str, torch.Tensor]:
         if not module.couple_lambda:
             snapshot[f"{name}.lambda_proj"] = module.lambda_proj.detach().float().cpu().clone()
             snapshot[f"{name}.lambda_bias"] = module.lambda_bias.detach().float().cpu().clone()
-        if module.memory_reader_enabled:
-            snapshot[f"{name}.memory_reader_up.weight"] = (
-                module.memory_reader_up.weight.detach().float().cpu().clone()
-            )
-            snapshot[f"{name}.memory_reader_up.bias"] = (
-                module.memory_reader_up.bias.detach().float().cpu().clone()
-            )
-            snapshot[f"{name}.memory_reader_down.weight"] = (
-                module.memory_reader_down.weight.detach().float().cpu().clone()
-            )
-            snapshot[f"{name}.memory_reader_down.bias"] = (
-                module.memory_reader_down.bias.detach().float().cpu().clone()
-            )
     return snapshot
 
 
@@ -2530,40 +2122,6 @@ def collect_delta_mem_state_stats(model: nn.Module) -> dict[str, float]:
     }
 
 
-def collect_delta_mem_memory_reader_stats(model: nn.Module) -> dict[str, float]:
-    enabled_modules = 0
-    active_modules = 0
-    mean_output_norm = 0.0
-    max_output_norm = 0.0
-    for _, module in iter_delta_mem_modules(model):
-        if not module.memory_reader_enabled:
-            continue
-        enabled_modules += 1
-        if module.last_memory_reader_norm is None:
-            continue
-        active_modules += 1
-        norm = float(module.last_memory_reader_norm.detach().float().item())
-        mean_output_norm += norm
-        max_output_norm = max(max_output_norm, norm)
-    if active_modules > 0:
-        mean_output_norm /= active_modules
-    return {
-        "enabled_modules": enabled_modules,
-        "active_modules": active_modules,
-        "mean_output_norm": mean_output_norm,
-        "max_output_norm": max_output_norm,
-    }
-
-
-def collect_delta_mem_memory_reader_outputs(model: nn.Module) -> list[tuple[str, torch.Tensor]]:
-    outputs: list[tuple[str, torch.Tensor]] = []
-    for name, module in iter_delta_mem_modules(model):
-        if not module.memory_reader_enabled or module.last_memory_reader_output is None:
-            continue
-        outputs.append((name, module.last_memory_reader_output))
-    return outputs
-
-
 def collect_delta_mem_output_ratio_stats(model: nn.Module) -> dict[str, float]:
     num_modules = 0
     modules_with_delta_o = 0
@@ -2594,36 +2152,6 @@ def collect_delta_mem_output_ratio_stats(model: nn.Module) -> dict[str, float]:
         "mean_delta_o_norm": mean_delta_o_norm,
         "mean_delta_o_ratio": mean_delta_o_ratio,
         "max_delta_o_ratio": max_delta_o_ratio,
-    }
-
-
-def collect_delta_mem_latent_stats(model: nn.Module) -> dict[str, float]:
-    enabled_modules = 0
-    active_modules = 0
-    valid_ratio = 0.0
-    mean_slot_norm = 0.0
-    gate_mean = 0.0
-    for _, module in iter_delta_mem_modules(model):
-        if not module.latent_memory_enabled:
-            continue
-        enabled_modules += 1
-        if module.last_latent_slot_valid_ratio is not None:
-            active_modules += 1
-            valid_ratio += float(module.last_latent_slot_valid_ratio.detach().float().item())
-        if module.last_latent_slot_norm is not None:
-            mean_slot_norm += float(module.last_latent_slot_norm.detach().float().item())
-        if module.last_latent_gate_value is not None:
-            gate_mean += float(module.last_latent_gate_value.detach().float().item())
-    if active_modules > 0:
-        valid_ratio /= active_modules
-        mean_slot_norm /= active_modules
-        gate_mean /= active_modules
-    return {
-        "enabled_modules": enabled_modules,
-        "active_modules": active_modules,
-        "valid_ratio": valid_ratio,
-        "mean_slot_norm": mean_slot_norm,
-        "gate_mean": gate_mean,
     }
 
 

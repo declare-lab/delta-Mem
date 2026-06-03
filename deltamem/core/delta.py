@@ -11,9 +11,6 @@ from deltamem.core.delta_impl import (
     VALID_MEMORY_PARTITION_ROUTING,
     VALID_STATE_UPDATE_MODES,
     collect_delta_mem_gate_stats,
-    collect_delta_mem_latent_stats,
-    collect_delta_mem_memory_reader_outputs,
-    collect_delta_mem_memory_reader_stats,
     collect_delta_mem_partition_route_stats,
     collect_delta_mem_state_stats,
     collect_delta_mem_weight_stats,
@@ -60,8 +57,7 @@ class HFDeltaMemConfig(ExperimentalHFDeltaMemConfig):
         if self.memory_readout_mode != "delta":
             raise ValueError(
                 "Mainline HFDeltaMemConfig only supports memory_readout_mode='delta'. "
-                "Move synthetic_kv / latent_context / memory_branch experiments to "
-                "deltamem.core.delta_impl."
+                "Archived synthetic_kv / latent_context / memory_branch readouts were removed."
             )
 
 
@@ -118,9 +114,6 @@ __all__ = [
     "HFDeltaMemConfig",
     "attach_delta_mem",
     "collect_delta_mem_gate_stats",
-    "collect_delta_mem_latent_stats",
-    "collect_delta_mem_memory_reader_outputs",
-    "collect_delta_mem_memory_reader_stats",
     "collect_delta_mem_partition_route_stats",
     "collect_delta_mem_state_stats",
     "collect_delta_mem_weight_stats",
