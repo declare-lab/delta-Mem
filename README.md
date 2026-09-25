@@ -1,5 +1,5 @@
 <h1 align="center">
-    δ-mem: Efficient Online Memory for Large Language Models (NeurIPS 2026)
+    (NeurIPS 2026) δ-mem: Efficient Online Memory for Large Language Models
 </h1>
 
 <p align="center">
